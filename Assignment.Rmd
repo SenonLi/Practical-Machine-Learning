@@ -1,0 +1,137 @@
+---
+title: "Prediction Assignment of Practical Machine Learning"
+author: "Sen"
+date: "March 26, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Background
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks.
+
+One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: <http://groupware.les.inf.puc-rio.br/har> (see the section on the Weight Lifting Exercise Dataset).
+
+The training data for this project are available here: <https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv>
+
+The test data are available here: <https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv>
+
+##Load Data
+Upload the files into RStudio
+````{r, eval=FALSE}
+trainingSet <- read.csv("pml-training.csv", na.strings = c("NA", "#DIV/0!", ""))
+testingSet  <- read.csv("pml-testing.csv",  na.strings = c("NA", "#DIV/0!", ""))
+````
+
+##Inspect Data
+Inspect into the data, and get to know the prediction job.
+````{r, echo=FALSE}
+trainingSet <- read.csv("pml-training.csv", na.strings = c("NA", "#DIV/0!", ""))
+testingSet  <- read.csv("pml-testing.csv",  na.strings = c("NA", "#DIV/0!", ""))
+````
+````{r}
+dim(trainingSet)
+dim(testingSet)
+str(trainingSet, list.len=20)
+table(trainingSet$classe)
+````
+
+##Clean Data
+Form the inspection of data, we found out a lot of NAs, and also the first 6 rows are non-relative data;
+so we need to do cleaning for both of trainingSet and testingSet. 
+````{r}
+NA_Count = sapply(1:dim(trainingSet)[2],function(x)sum(is.na(trainingSet[,x])))
+NA_list = which(NA_Count>0)
+trainingSet = trainingSet[,-NA_list]
+trainingSet = trainingSet[,-c(1:6)]
+dim(trainingSet)
+trainingSet$classe = factor(trainingSet$classe)
+testingSet = testingSet[,-NA_list]
+testingSet = testingSet[,-c(1:6)]
+dim(testingSet)
+````
+
+##Modelling for Cross Validation
+In order to do cross validation, We split the trainingSet into two parts, 60% for training purpose, and 40% for testing purpose.
+````{r}
+library(caret)
+set.seed(12345)
+inTrain <- createDataPartition(y=trainingSet$classe, p=0.60, list=FALSE)
+train_Train  <- trainingSet[inTrain,]
+train_Test  <- trainingSet[-inTrain,]
+dim(train_Train)
+dim(train_Test)
+````
+
+Now, We got 53 ( a lot !! ) clean covariates to build a model for the 54th column, classe.
+Take a look of them for their relative importance.
+````{r}
+library(randomForest)
+set.seed(12345)
+fitModel <- randomForest(classe~., data=train_Train, importance=TRUE, ntree=100)
+varImpPlot(fitModel)
+````
+
+Based on the figure above, we could try the top 10 (much less than 53, could be faster a lot) variables for model building, and then check its accuracy acceptable acceptable or not. Here are the chosen 10 covariates: yaw_belt, roll_belt, num_window, pitch_belt, magnet_dumbbell_y, magnet_dumbbell_z, pitch_forearm, accel_dumbbell_y, roll_arm, and roll_forearm.
+
+Find out their correlation matrix, replaces its 1s in the diagonal with 0s, and outputs the variables with an absolute value correlation above 75%:
+````{r}
+correl = cor(train_Train[,c("yaw_belt","roll_belt","num_window","pitch_belt","magnet_dumbbell_z","magnet_dumbbell_y","pitch_forearm","accel_dumbbell_y","roll_arm","roll_forearm")])
+diag(correl) <- 0
+which(abs(correl)>0.75, arr.ind=TRUE)
+````
+
+Then, we got a problem of roll_belt and yaw_belt:
+````{r}
+cor(train_Train$roll_belt, train_Train$yaw_belt)
+````
+
+It turns out that, to abandon one of those two should be a godd idea. We try to give up yaw_belt, and do with the remaining 9 variables.
+````{r}
+library(rpart.plot)
+fitModel <- rpart(classe~., data=train_Train, method="class")
+````
+````{r}
+prp(fitModel)
+````
+
+The tree classifier selects roll_belt as the first discriminant, which tells use that roll_belt would be more important covariate than yaw_belt.
+So, we will keep roll_belt.
+
+##Train and Evaluate
+Using Random Forest algorithm with 9 **relatively independent** variables, 2-fold cross-validation ( **simplest, for faster training of large data** ) control.
+Let's expect a good prediction.
+````{r}
+set.seed(12345)
+fitModel <- train(classe~ roll_belt + num_window + pitch_belt + magnet_dumbbell_y + magnet_dumbbell_z + pitch_forearm + accel_dumbbell_y + roll_arm + roll_forearm,
+                  data=train_Train,
+                  method="rf",
+                  trControl=trainControl(method="cv",number=2),
+                  prox=TRUE,
+                  verbose=TRUE,
+                  allowParallel=TRUE)
+predictions <- predict(fitModel, newdata=train_Test)
+confusionMat <- confusionMatrix(predictions, train_Test$classe)
+confusionMat
+````
+The train_Test was untouched during data manipulation and random rorest algorithm training, which means the prediction accuracy that larger than 99.7% gives an unbiased good estimation! 
+
+##Out Of Sample Error Rate
+````{r}
+missClass = function(values, predicted) {
+  sum(predicted != values) / length(values)
+}
+OOS_errRate = missClass(train_Test$classe, predictions)
+OOS_errRate
+````
+
+##Final Prediction
+````{r}
+predictions <- predict(fitModel, newdata=testingSet)
+testingSet$classe <- predictions
+answers = testingSet$classe
+answers
+````
+
